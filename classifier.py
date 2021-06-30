@@ -1,4 +1,6 @@
 import torch
+import matplotlib.pyplot as plt
+import time
 from torch import nn, optim
 from torchvision import datasets, transforms, models
 from collections import OrderedDict
@@ -7,15 +9,15 @@ from collections import OrderedDict
 def load_dataset():
 	train_transform = transforms.Compose([
 		transforms.RandomRotation(30),
-		transforms.RandomResizedCrop(128),
+		transforms.RandomResizedCrop(224),
 		transforms.RandomHorizontalFlip(),
 		transforms.ToTensor(),
-		transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    	transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 	])
 
 	test_transform = transforms.Compose([
-		transforms.Resize(150),
-		transforms.CenterCrop(128),
+		transforms.Resize(256),
+		transforms.CenterCrop(224),
 		transforms.ToTensor()
 	])
 
@@ -28,40 +30,50 @@ def load_dataset():
 	return trainloader, testloader
 
 
+def plot_loss_graph(train, test):
+	plt.plot(train, label='Training loss')
+	plt.plot(test, label='Validation loss')
+	plt.legend(frameon=False)
+	plt.savefig('graphs/losses.png')
+
+
 if __name__ == '__main__':
+	is_cuda = False
+	if torch.cuda.is_available():
+		is_cuda = True
+
 	trainloader, testloader = load_dataset()
 
-	'''
-	print(torch.cuda.is_available())
-	print(torch.version.hip)
-	input('Go?')
-	'''
-
 	model = models.densenet121(pretrained=True)
-	model.classifier = nn.Sequential(OrderedDict([
-										 ('fc1', nn.Linear(1024, 256)),
-										 ('relu', nn.ReLU()),
-										 ('fc2', nn.Linear(256, 5)),
-										 ('output', nn.LogSoftmax(dim=1))
-	]))
-	model.cuda()
-
-	device = torch.device('cuda')
+	model.classifier = nn.Sequential(*[
+		nn.Linear(1024, 256),
+		nn.ReLU(),
+		nn.Linear(256, 5),
+		nn.LogSoftmax(dim=1)
+	])
+	if is_cuda:
+		model.cuda()
 
 	criterion = nn.NLLLoss()
-	optimizer = optim.Adam(model.classifier.parameters(), lr=0.001)
+	optimizer = optim.Adam(model.classifier.parameters(), lr=0.0035)
 
-	epochs = 10
+	epochs = 4
 	steps = 0
 	running_loss = 0
 	print_every = 24
+
+	train_losses = []
+	validation_losses = []
+
+	last_print = time.time()
+
 	print('Running...')
 	for epoch in range(epochs):
 		for inputs, labels in trainloader:
 			steps += 1
 
-			#inputs, labels = inputs.to(device), labels.to(device)
-			inputs, labels = inputs.cuda(), labels.cuda()
+			if is_cuda:
+				inputs, labels = inputs.cuda(), labels.cuda()
 
 			logps = model(inputs)
 			loss = criterion(logps, labels)
@@ -78,7 +90,8 @@ if __name__ == '__main__':
 				model.eval()
 				with torch.no_grad():
 					for inputs, labels in testloader:
-						inputs, labels = inputs.cuda(), labels.cuda()
+						if is_cuda:
+							inputs, labels = inputs.cuda(), labels.cuda()
 						
 						logps = model(inputs)
 						batch_loss = criterion(logps, labels)
@@ -91,9 +104,20 @@ if __name__ == '__main__':
 						equals = top_class == labels.view(*top_class.shape)
 						accuracy += torch.mean(equals.type(torch.FloatTensor)).item()
 
-				print(f"Epoch {epoch+1}/{epochs}.. "
-					f"Train loss: {running_loss/print_every:.3f}.. "
-					f"Test loss: {test_loss/len(testloader):.3f}.. "
-					f"Test accuracy: {accuracy/len(testloader):.3f}")
+				train_loss = running_loss/print_every
+				test_loss = test_loss/len(testloader)
+
+				print(f"Epoch {epoch+1}/{epochs}   "
+					f"Train loss: {train_loss:.3f}   "
+					f"Test loss: {test_loss:.3f}   "
+					f"Test accuracy: {accuracy/len(testloader):.3f}"
+					f"      {time.time() - last_print:.1f} sec")
 				running_loss = 0
+				last_print = time.time()
 				model.train()
+
+				train_losses.append(train_loss)
+				validation_losses.append(test_loss)
+	
+	torch.save(model.state_dict(), 'checkout.pth')
+	plot_loss_graph(train_loss, validation_losses)
